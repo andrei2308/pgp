@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+
+crypto/build/
+
+*.a
+*.o
+
+crypto/openssl/
+
+client/dist/
+client/coverage/
