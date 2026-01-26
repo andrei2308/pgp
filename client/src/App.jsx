@@ -32,7 +32,8 @@ function App() {
   const runTest = () => {
     if (!pgpEngine) return;
     // call a func just to test the bridge
-    const result = pgpEngine.encrypt("Hello form React!");
+    const result = pgpEngine.encrypt("salut");
+
     setTestOutput(result);
   };
 
