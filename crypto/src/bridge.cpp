@@ -79,16 +79,23 @@ public:
 
     /// @brief Encrypts a string using AES-128-CBC.
     /// @param input The plaintext string.
+    /// @param keyBytes The AES key (16 bytes).
     /// @return Ciphertext encoded as a Hex string.
-    std::string encrypt(std::string input) {
+    std::string encrypt(std::string input, std::string keyHex) {
+        std::string keyBytes = hexToBytes(keyHex);
+
+        if (keyBytes.length() != 16) {
+            return "Error: AES key must be exactly 16 bytes (32 hex chars)";
+        }
+
         const EVP_CIPHER* cipher = EVP_aes_128_cbc();
         EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
         
-        // Todo: Accept Key/IV as parameters in production
-        unsigned char key[16] = {0};
-        unsigned char iv[16] = {0};
+        unsigned char iv[16] = {0}; 
 
-        EVP_EncryptInit_ex(ctx, cipher, NULL, key, iv);
+        if (EVP_EncryptInit_ex(ctx, cipher, NULL, (unsigned char*)keyBytes.c_str(), iv) != 1) {
+            EVP_CIPHER_CTX_free(ctx); return "Error: Init";
+        }
 
         int inputLen = input.length();
         int paddingLen = 16 - (inputLen % 16);
@@ -107,17 +114,23 @@ public:
 
     /// @brief Decrypts a Hex-encoded string using AES-128-CBC.
     /// @param inputHex The ciphertext in Hex format.
+    /// @param keyBytes The AES key (16 bytes).
     /// @return Plaintext string or error message.
-    std::string decrypt(std::string inputHex) {
+    std::string decrypt(std::string inputHex, std::string keyHex) {
+        std::string keyBytes = hexToBytes(keyHex);
+
+        if (keyBytes.length() != 16) {
+            return "Error: AES key must be exactly 16 bytes (32 hex chars)";
+        }
+
         std::string ciphertext = hexToBytes(inputHex);
 
         const EVP_CIPHER* cipher = EVP_aes_128_cbc();
         EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
 
-        unsigned char key[16] = {0};
         unsigned char iv[16] = {0};
 
-        if (EVP_DecryptInit_ex(ctx, cipher, NULL, key, iv) != 1) {
+        if (EVP_DecryptInit_ex(ctx, cipher, NULL, (unsigned char*)keyBytes.c_str(), iv) != 1) {
             EVP_CIPHER_CTX_free(ctx);
             return "Error: Init Failed";
         }
@@ -266,5 +279,5 @@ EMSCRIPTEN_BINDINGS(my_module) {
         .function("decrypt", &PgpContext::decrypt)
         .function("rsaEncryptKey", &PgpContext::rsaEncryptKey)
         .function("signMessage", &PgpContext::signMessage)
-        .function("generateKeys", &PgpContext::generateKeys); // <--- ADD THIS
+        .function("generateKeys", &PgpContext::generateKeys);
 }

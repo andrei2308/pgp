@@ -1,26 +1,28 @@
 import { useEffect, useState } from 'react';
 import './App.css';
 
-// Helper to generate a random 16-byte AES key string
 const generateSessionKey = () => {
   const array = new Uint8Array(16);
   window.crypto.getRandomValues(array);
-  return Array.from(array, byte => String.fromCharCode(byte)).join('');
+  
+  // Convert to Hex String (e.g., "a1b2...")
+  let hexString = "";
+  for (let i = 0; i < array.length; i++) {
+    hexString += array[i].toString(16).padStart(2, '0');
+  }
+  return hexString;
 };
 
 function App() {
   const [pgpEngine, setPgpEngine] = useState(null);
   const [status, setStatus] = useState("Loading...");
   
-  // --- IDENTITY STATE ---
   const [myIdentity, setMyIdentity] = useState({ publicKey: "", privateKey: "" });
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // --- HANDSHAKE STATE ---
   const [partnerPubKey, setPartnerPubKey] = useState("");
-  const [sessionKey, setSessionKey] = useState(""); // The AES Key we will use
+  const [sessionKey, setSessionKey] = useState("");
 
-  // --- CHAT STATE ---
   const [message, setMessage] = useState("Hello Secret World");
   const [fullPacket, setFullPacket] = useState(null);
 
@@ -33,7 +35,6 @@ function App() {
         const engine = new module.PgpContext();
         setPgpEngine(engine);
         setStatus(engine.checkStatus());
-        // Auto-generate a session key on load
         setSessionKey(generateSessionKey());
       });
     };
@@ -42,7 +43,6 @@ function App() {
 
   const handleGenerateIdentity = () => {
     setIsGenerating(true);
-    // Timeout allows the UI to update "Generating..." before Wasm freezes the thread
     setTimeout(() => {
       const keys = pgpEngine.generateKeys();
       setMyIdentity(keys);
@@ -52,20 +52,14 @@ function App() {
 
   const handleSendMessage = () => {
     if(!partnerPubKey) { alert("Need Partner's Public Key!"); return; }
-    if(!myIdentity.privateKey) { alert("Need My Private Key (Generate Identity first)!"); return; }
+    if(!myIdentity.privateKey) { alert("Need My Private Key!"); return; }
 
-    // 1. ENCRYPT MESSAGE (Symmetric)
-    // In a real app, 'encrypt' would accept the key as a param. 
-    // For this demo, we assume the C++ uses its internal 0-key or we modify C++ to take it.
-    // Ideally: pgpEngine.encrypt(message, sessionKey);
-    const aesCipher = pgpEngine.encrypt(message);
+    const aesCipher = pgpEngine.encrypt(message, sessionKey);
+    
+    if (aesCipher.startsWith("Error")) { alert(aesCipher); return; }
 
-    // 2. ENCRYPT SESSION KEY (Asymmetric)
-    // Only the partner can decrypt this to get the AES key
     const encryptedKey = pgpEngine.rsaEncryptKey(sessionKey, partnerPubKey);
 
-    // 3. SIGN MESSAGE (Integrity)
-    // Proves I sent it
     const signature = pgpEngine.signMessage(aesCipher, myIdentity.privateKey);
 
     setFullPacket({
@@ -75,6 +69,17 @@ function App() {
     });
   };
 
+  const handleSimulateReceive = () => {
+    if (!fullPacket) return;
+
+    try {
+        const plaintext = pgpEngine.decrypt(fullPacket.aesCipher, sessionKey);
+        alert("Decrypted Message: " + plaintext);
+    } catch (e) {
+        alert("Decryption Failed: " + e);
+    }
+  };
+
   return (
     <div style={{ fontFamily: 'sans-serif', maxWidth: '800px', margin: '20px auto', padding: '20px' }}>
       <h1>🔐 PGP Chat Client</h1>
@@ -82,7 +87,6 @@ function App() {
         <strong>System:</strong> {status}
       </div>
 
-      {/* STEP 1: IDENTITY */}
       <div style={styles.section}>
         <h2>1. My Identity</h2>
         <button onClick={handleGenerateIdentity} disabled={!pgpEngine || isGenerating} style={styles.btn}>
@@ -96,7 +100,6 @@ function App() {
         )}
       </div>
 
-      {/* STEP 2: PARTNER */}
       <div style={styles.section}>
         <h2>2. Partner Setup</h2>
         <p>Paste the <strong>Public Key</strong> of the person you want to chat with:</p>
@@ -108,7 +111,6 @@ function App() {
         />
       </div>
 
-      {/* STEP 3: SEND */}
       <div style={styles.section}>
         <h2>3. Secure Message</h2>
         <input 
@@ -119,6 +121,10 @@ function App() {
         <button onClick={handleSendMessage} style={{...styles.btn, background: '#28a745'}}>
           Encrypt & Sign Packet
         </button>
+        
+        <button onClick={handleSimulateReceive} style={{...styles.btn, marginLeft: '10px', background: '#6c757d'}}>
+          Verify / Decrypt (Local Test)
+        </button>
 
         {fullPacket && (
           <div style={{ marginTop: '20px', background: '#333', color: '#fff', padding: '15px', borderRadius: '5px' }}>
@@ -126,9 +132,6 @@ function App() {
             <pre style={{ overflowX: 'auto', fontSize: '0.85em' }}>
               {JSON.stringify(fullPacket, null, 2)}
             </pre>
-            <p style={{fontSize: '0.8em', color: '#aaa'}}>
-              * Contains: Encrypted Message (AES), Encrypted Key (RSA), Signature (RSA-SHA256)
-            </p>
           </div>
         )}
       </div>
