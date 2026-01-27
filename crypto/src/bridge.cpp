@@ -11,6 +11,12 @@
 
 using namespace emscripten;
 
+struct KeyPair {
+    std::string publicKey;
+    std::string privateKey;
+    std::string error;
+};
+
 /// @brief Bridge class to expose OpenSSL crypto primitives to JavaScript via WebAssembly.
 class PgpContext {
 private:
@@ -73,16 +79,23 @@ public:
 
     /// @brief Encrypts a string using AES-128-CBC.
     /// @param input The plaintext string.
+    /// @param keyBytes The AES key (16 bytes).
     /// @return Ciphertext encoded as a Hex string.
-    std::string encrypt(std::string input) {
+    std::string encrypt(std::string input, std::string keyHex) {
+        std::string keyBytes = hexToBytes(keyHex);
+
+        if (keyBytes.length() != 16) {
+            return "Error: AES key must be exactly 16 bytes (32 hex chars)";
+        }
+
         const EVP_CIPHER* cipher = EVP_aes_128_cbc();
         EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
         
-        // Todo: Accept Key/IV as parameters in production
-        unsigned char key[16] = {0};
-        unsigned char iv[16] = {0};
+        unsigned char iv[16] = {0}; 
 
-        EVP_EncryptInit_ex(ctx, cipher, NULL, key, iv);
+        if (EVP_EncryptInit_ex(ctx, cipher, NULL, (unsigned char*)keyBytes.c_str(), iv) != 1) {
+            EVP_CIPHER_CTX_free(ctx); return "Error: Init";
+        }
 
         int inputLen = input.length();
         int paddingLen = 16 - (inputLen % 16);
@@ -101,17 +114,23 @@ public:
 
     /// @brief Decrypts a Hex-encoded string using AES-128-CBC.
     /// @param inputHex The ciphertext in Hex format.
+    /// @param keyBytes The AES key (16 bytes).
     /// @return Plaintext string or error message.
-    std::string decrypt(std::string inputHex) {
+    std::string decrypt(std::string inputHex, std::string keyHex) {
+        std::string keyBytes = hexToBytes(keyHex);
+
+        if (keyBytes.length() != 16) {
+            return "Error: AES key must be exactly 16 bytes (32 hex chars)";
+        }
+
         std::string ciphertext = hexToBytes(inputHex);
 
         const EVP_CIPHER* cipher = EVP_aes_128_cbc();
         EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
 
-        unsigned char key[16] = {0};
         unsigned char iv[16] = {0};
 
-        if (EVP_DecryptInit_ex(ctx, cipher, NULL, key, iv) != 1) {
+        if (EVP_DecryptInit_ex(ctx, cipher, NULL, (unsigned char*)keyBytes.c_str(), iv) != 1) {
             EVP_CIPHER_CTX_free(ctx);
             return "Error: Init Failed";
         }
@@ -200,15 +219,65 @@ public:
 
         return signatureHex;
     }
+
+    // --- KEY GENERATION ---
+    KeyPair generateKeys() {
+        KeyPair result;
+        EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+        EVP_PKEY* pkey = NULL;
+
+        if (!ctx) { result.error = "Context Init Failed"; return result; }
+
+        if (EVP_PKEY_keygen_init(ctx) <= 0) {
+            result.error = "KeyGen Init Failed"; 
+            EVP_PKEY_CTX_free(ctx); return result; 
+        }
+
+        if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0) {
+            result.error = "Setting Bits Failed"; 
+            EVP_PKEY_CTX_free(ctx); return result; 
+        }
+
+        if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
+            result.error = "Key Generation Failed"; 
+            EVP_PKEY_CTX_free(ctx); return result; 
+        }
+
+        BIO* pubBio = BIO_new(BIO_s_mem());
+        PEM_write_bio_PUBKEY(pubBio, pkey);
+        
+        char* pubData;
+        long pubLen = BIO_get_mem_data(pubBio, &pubData);
+        result.publicKey = std::string(pubData, pubLen);
+
+        BIO* privBio = BIO_new(BIO_s_mem());
+        PEM_write_bio_PrivateKey(privBio, pkey, NULL, NULL, 0, NULL, NULL);
+        
+        char* privData;
+        long privLen = BIO_get_mem_data(privBio, &privData);
+        result.privateKey = std::string(privData, privLen);
+
+        BIO_free(pubBio);
+        BIO_free(privBio);
+        EVP_PKEY_free(pkey);
+        EVP_PKEY_CTX_free(ctx);
+
+        return result;
+    }
 };
 
-// --- EXPORT TO JAVASCRIPT ---
 EMSCRIPTEN_BINDINGS(my_module) {
+    value_object<KeyPair>("KeyPair")
+        .field("publicKey", &KeyPair::publicKey)
+        .field("privateKey", &KeyPair::privateKey)
+        .field("error", &KeyPair::error);
+
     class_<PgpContext>("PgpContext")
         .constructor<>()
         .function("checkStatus", &PgpContext::checkStatus)
         .function("encrypt", &PgpContext::encrypt)
         .function("decrypt", &PgpContext::decrypt)
         .function("rsaEncryptKey", &PgpContext::rsaEncryptKey)
-        .function("signMessage", &PgpContext::signMessage);
+        .function("signMessage", &PgpContext::signMessage)
+        .function("generateKeys", &PgpContext::generateKeys);
 }

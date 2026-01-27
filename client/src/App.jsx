@@ -1,268 +1,149 @@
 import { useEffect, useState } from 'react';
 import './App.css';
 
+const generateSessionKey = () => {
+  const array = new Uint8Array(16);
+  window.crypto.getRandomValues(array);
+  
+  // Convert to Hex String (e.g., "a1b2...")
+  let hexString = "";
+  for (let i = 0; i < array.length; i++) {
+    hexString += array[i].toString(16).padStart(2, '0');
+  }
+  return hexString;
+};
+
 function App() {
   const [pgpEngine, setPgpEngine] = useState(null);
-  const [status, setStatus] = useState("Loading Wasm...");
+  const [status, setStatus] = useState("Loading...");
   
-  // --- STATE FOR AES (Symmetric) ---
-  const [aesInput, setAesInput] = useState("Hello World");
-  const [aesCipher, setAesCipher] = useState("");
-  const [aesDecrypted, setAesDecrypted] = useState("");
+  const [myIdentity, setMyIdentity] = useState({ publicKey: "", privateKey: "" });
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  // --- STATE FOR RSA (Asymmetric) ---
-  const [sessionKey, setSessionKey] = useState("1234567812345678"); // 16 bytes for AES-128
-  const [pubKeyPem, setPubKeyPem] = useState("");
-  const [privKeyPem, setPrivKeyPem] = useState("");
-  const [encryptedSessionKey, setEncryptedSessionKey] = useState("");
-  const [signature, setSignature] = useState("");
+  const [partnerPubKey, setPartnerPubKey] = useState("");
+  const [sessionKey, setSessionKey] = useState("");
 
-  // Load Wasm Engine
+  const [message, setMessage] = useState("Hello Secret World");
+  const [fullPacket, setFullPacket] = useState(null);
+
   useEffect(() => {
     const script = document.createElement('script');
     script.src = "/secure_chat.js";
     script.async = true;
-
     script.onload = () => {
       window.PGPCore().then((module) => {
-        setStatus("Wasm Loaded. Initializing Engine...");
         const engine = new module.PgpContext();
         setPgpEngine(engine);
         setStatus(engine.checkStatus());
+        setSessionKey(generateSessionKey());
       });
     };
-
     document.body.appendChild(script);
-
-    return () => {
-      document.body.removeChild(script);
-    };
   }, []);
 
-  // --- HANDLERS ---
+  const handleGenerateIdentity = () => {
+    setIsGenerating(true);
+    setTimeout(() => {
+      const keys = pgpEngine.generateKeys();
+      setMyIdentity(keys);
+      setIsGenerating(false);
+    }, 100);
+  };
 
-  const handleAesEncrypt = () => {
-    if (!pgpEngine) return;
+  const handleSendMessage = () => {
+    if(!partnerPubKey) { alert("Need Partner's Public Key!"); return; }
+    if(!myIdentity.privateKey) { alert("Need My Private Key!"); return; }
+
+    const aesCipher = pgpEngine.encrypt(message, sessionKey);
+    
+    if (aesCipher.startsWith("Error")) { alert(aesCipher); return; }
+
+    const encryptedKey = pgpEngine.rsaEncryptKey(sessionKey, partnerPubKey);
+
+    const signature = pgpEngine.signMessage(aesCipher, myIdentity.privateKey);
+
+    setFullPacket({
+      aesCipher,
+      encryptedKey,
+      signature
+    });
+  };
+
+  const handleSimulateReceive = () => {
+    if (!fullPacket) return;
+
     try {
-      // 1. Encrypt Plaintext -> Hex
-      const hex = pgpEngine.encrypt(aesInput);
-      setAesCipher(hex);
-      
-      // 2. Immediately try to decrypt it back to verify integrity
-      const plain = pgpEngine.decrypt(hex);
-      setAesDecrypted(plain);
+        const plaintext = pgpEngine.decrypt(fullPacket.aesCipher, sessionKey);
+        alert("Decrypted Message: " + plaintext);
     } catch (e) {
-      alert("AES Error: " + e);
+        alert("Decryption Failed: " + e);
     }
-  };
-
-  const handleRsaEncrypt = () => {
-    if (!pgpEngine) return;
-    if (!pubKeyPem.includes("BEGIN PUBLIC KEY")) {
-      alert("Please paste a valid RSA Public Key (PEM format)!");
-      return;
-    }
-    // Encrypt the 16-byte session key using the Public Key
-    const result = pgpEngine.rsaEncryptKey(sessionKey, pubKeyPem);
-    setEncryptedSessionKey(result);
-  };
-
-  const handleSign = () => {
-    if (!pgpEngine) return;
-    if (!privKeyPem.includes("BEGIN PRIVATE KEY")) {
-      alert("Please paste a valid RSA Private Key (PEM format)!");
-      return;
-    }
-    // Sign the AES ciphertext to prove it came from us
-    const sig = pgpEngine.signMessage(aesCipher, privKeyPem);
-    setSignature(sig);
   };
 
   return (
-    <div style={{ fontFamily: 'Segoe UI, sans-serif', maxWidth: '900px', margin: '0 auto', padding: '20px' }}>
-      
-      {/* HEADER */}
-      <h1 style={{ color: '#2c3e50', borderBottom: '2px solid #eee', paddingBottom: '10px' }}>
-        🔐 Secure Chat <span style={{color: '#007bff'}}>PGP Core</span>
-      </h1>
-      
-      <div style={{ 
-        padding: '12px 20px', 
-        background: '#e8f0fe', 
-        borderLeft: '5px solid #007bff',
-        marginBottom: '30px', 
-        color: '#1a73e8',
-        borderRadius: '4px',
-        fontWeight: '500'
-      }}>
-        Status: {status}
+    <div style={{ fontFamily: 'sans-serif', maxWidth: '800px', margin: '20px auto', padding: '20px' }}>
+      <h1>🔐 PGP Chat Client</h1>
+      <div style={{ background: '#eef', padding: '10px', marginBottom: '20px', borderLeft: '4px solid #007bff' }}>
+        <strong>System:</strong> {status}
       </div>
 
-      {/* SECTION 1: AES PLAYGROUND */}
-      <div style={styles.card}>
-        <h2 style={styles.cardHeader}>1. Symmetric Encryption (AES-128-CBC)</h2>
-        <div style={{ display: 'flex', gap: '20px' }}>
-          
-          <div style={{ flex: 1 }}>
-            <label style={styles.label}>Plaintext Message</label>
-            <input 
-              style={styles.input} 
-              value={aesInput} 
-              onChange={(e) => setAesInput(e.target.value)} 
-            />
-            <button 
-              onClick={handleAesEncrypt} 
-              disabled={!pgpEngine}
-              style={styles.button}
-            >
-              Encrypt & Verify
-            </button>
+      <div style={styles.section}>
+        <h2>1. My Identity</h2>
+        <button onClick={handleGenerateIdentity} disabled={!pgpEngine || isGenerating} style={styles.btn}>
+          {isGenerating ? "Generating RSA-2048 Pair..." : "Generate New Keypair"}
+        </button>
+        {myIdentity.publicKey && (
+          <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+            <textarea readOnly value={myIdentity.publicKey} style={styles.keyBox} placeholder="Public Key" />
+            <textarea readOnly value={myIdentity.privateKey} style={{...styles.keyBox, background: '#fff0f0'}} placeholder="Private Key (Hidden)" />
           </div>
-
-          <div style={{ flex: 1 }}>
-            <label style={styles.label}>Resulting Ciphertext (Hex)</label>
-            <div style={styles.codeBlock}>{aesCipher || "Waiting..."}</div>
-            
-            <label style={styles.label}>Decryption Verification (Round-trip)</label>
-            <div style={{...styles.codeBlock, color: '#28a745'}}>
-              {aesDecrypted || "..."}
-            </div>
-          </div>
-        
-        </div>
+        )}
       </div>
 
-      {/* SECTION 2: RSA KEY EXCHANGE */}
-      <div style={styles.card}>
-        <h2 style={styles.cardHeader}>2. Key Exchange (RSA-OAEP)</h2>
-        <p style={{fontSize: '0.9em', color: '#666', marginBottom: '15px'}}>
-          Simulates encrypting the random Session Key (16 bytes) so only the recipient can read it.
-        </p>
-        
-        <div style={{ display: 'flex', gap: '20px' }}>
-          <div style={{ flex: 1 }}>
-             <label style={styles.label}>Session Key (16 chars)</label>
-             <input style={styles.input} value={sessionKey} onChange={e => setSessionKey(e.target.value)} />
-             
-             <label style={styles.label}>Recipient Public Key (PEM)</label>
-             <textarea 
-               style={styles.textarea} 
-               placeholder="-----BEGIN PUBLIC KEY-----..."
-               value={pubKeyPem}
-               onChange={e => setPubKeyPem(e.target.value)}
-             />
-             <button onClick={handleRsaEncrypt} style={styles.button} disabled={!pgpEngine}>
-                Encrypt Session Key
-             </button>
-          </div>
-          
-          <div style={{ flex: 1 }}>
-             <label style={styles.label}>Encrypted Key (Hex)</label>
-             <div style={{...styles.codeBlock, height: '140px'}}>
-               {encryptedSessionKey || "Output will appear here..."}
-             </div>
-          </div>
-        </div>
+      <div style={styles.section}>
+        <h2>2. Partner Setup</h2>
+        <p>Paste the <strong>Public Key</strong> of the person you want to chat with:</p>
+        <textarea 
+          value={partnerPubKey} 
+          onChange={(e) => setPartnerPubKey(e.target.value)} 
+          style={{...styles.keyBox, width: '100%', height: '120px'}} 
+          placeholder="-----BEGIN PUBLIC KEY-----..."
+        />
       </div>
 
-      {/* SECTION 3: SIGNING */}
-      <div style={styles.card}>
-        <h2 style={styles.cardHeader}>3. Digital Signature (RSA-SHA256)</h2>
-        <p style={{fontSize: '0.9em', color: '#666', marginBottom: '15px'}}>
-          Signs the AES Ciphertext hash to prove authenticity.
-        </p>
+      <div style={styles.section}>
+        <h2>3. Secure Message</h2>
+        <input 
+          value={message} 
+          onChange={e => setMessage(e.target.value)} 
+          style={{ width: '100%', padding: '10px', marginBottom: '10px' }} 
+        />
+        <button onClick={handleSendMessage} style={{...styles.btn, background: '#28a745'}}>
+          Encrypt & Sign Packet
+        </button>
         
-        <div style={{ display: 'flex', gap: '20px' }}>
-          <div style={{ flex: 1 }}>
-             <label style={styles.label}>Sender Private Key (PEM)</label>
-             <textarea 
-               style={styles.textarea} 
-               placeholder="-----BEGIN PRIVATE KEY-----..."
-               value={privKeyPem}
-               onChange={e => setPrivKeyPem(e.target.value)}
-             />
-             <button onClick={handleSign} style={{...styles.button, background: '#6f42c1'}} disabled={!pgpEngine || !aesCipher}>
-                Sign Ciphertext
-             </button>
+        <button onClick={handleSimulateReceive} style={{...styles.btn, marginLeft: '10px', background: '#6c757d'}}>
+          Verify / Decrypt (Local Test)
+        </button>
+
+        {fullPacket && (
+          <div style={{ marginTop: '20px', background: '#333', color: '#fff', padding: '15px', borderRadius: '5px' }}>
+            <h4 style={{marginTop:0}}>📦 JSON Packet to Send via WebSocket:</h4>
+            <pre style={{ overflowX: 'auto', fontSize: '0.85em' }}>
+              {JSON.stringify(fullPacket, null, 2)}
+            </pre>
           </div>
-          
-          <div style={{ flex: 1 }}>
-             <label style={styles.label}>Digital Signature (Hex)</label>
-             <div style={{...styles.codeBlock, height: '140px'}}>
-               {signature || "Sign the AES Ciphertext above to generate..."}
-             </div>
-          </div>
-        </div>
+        )}
       </div>
 
     </div>
   );
 }
 
-// Simple internal styles object
 const styles = {
-  card: {
-    background: 'white',
-    borderRadius: '8px',
-    padding: '25px',
-    marginBottom: '30px',
-    boxShadow: '0 2px 5px rgba(0,0,0,0.05)',
-    border: '1px solid #e1e4e8'
-  },
-  cardHeader: {
-    marginTop: 0,
-    fontSize: '1.2rem',
-    color: '#333',
-    borderBottom: '1px solid #eee',
-    paddingBottom: '10px',
-    marginBottom: '20px'
-  },
-  label: {
-    display: 'block',
-    fontWeight: '600',
-    marginBottom: '8px',
-    fontSize: '0.9rem',
-    color: '#555'
-  },
-  input: {
-    width: '100%',
-    padding: '10px',
-    marginBottom: '15px',
-    borderRadius: '4px',
-    border: '1px solid #ccc',
-    fontFamily: 'monospace'
-  },
-  textarea: {
-    width: '100%',
-    height: '100px',
-    padding: '10px',
-    marginBottom: '15px',
-    borderRadius: '4px',
-    border: '1px solid #ccc',
-    fontFamily: 'monospace',
-    fontSize: '0.8rem'
-  },
-  button: {
-    background: '#007bff',
-    color: 'white',
-    border: 'none',
-    padding: '10px 20px',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '1rem',
-    fontWeight: '500'
-  },
-  codeBlock: {
-    background: '#2d2d2d',
-    color: '#f8f8f2',
-    padding: '15px',
-    borderRadius: '4px',
-    fontFamily: 'Consolas, monospace',
-    fontSize: '0.85rem',
-    wordBreak: 'break-all',
-    minHeight: '40px',
-    marginBottom: '15px'
-  }
+  section: { border: '1px solid #ddd', padding: '20px', borderRadius: '8px', marginBottom: '20px' },
+  btn: { padding: '10px 20px', fontSize: '1em', cursor: 'pointer', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px' },
+  keyBox: { width: '50%', height: '100px', fontSize: '0.75em', fontFamily: 'monospace', padding: '5px' }
 };
 
 export default App;
