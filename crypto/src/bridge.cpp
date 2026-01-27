@@ -159,7 +159,10 @@ public:
     /// @param sessionKeyBytes Raw binary string of the AES key.
     /// @param pubKeyPem The receiver's Public Key (PEM).
     /// @return Encrypted Session Key as Hex string.
-    std::string rsaEncryptKey(std::string sessionKeyBytes, std::string pubKeyPem){
+    std::string rsaEncryptKey(std::string sessionKeyHex, std::string pubKeyPem){
+        // 1. Decode Hex -> Raw Bytes (THE FIX)
+        std::string sessionKeyBytes = hexToBytes(sessionKeyHex);
+
         EVP_PKEY* pubKey = loadPublicKey(pubKeyPem);
         if (!pubKey) return "Error: Load PubKey";
 
@@ -171,10 +174,12 @@ public:
         if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) return "Error: Padding";
 
         size_t outlen;
+        // Use the DECODED bytes here
         EVP_PKEY_encrypt(ctx, NULL, &outlen, (unsigned char*)sessionKeyBytes.c_str(), sessionKeyBytes.length());
 
         unsigned char* out = new unsigned char[outlen];
         
+        // Use the DECODED bytes here
         if (EVP_PKEY_encrypt(ctx, out, &outlen, (unsigned char*)sessionKeyBytes.c_str(), sessionKeyBytes.length()) <= 0) {
              delete[] out; EVP_PKEY_CTX_free(ctx); EVP_PKEY_free(pubKey); return "Error: Encrypt";
         }
@@ -186,6 +191,39 @@ public:
         EVP_PKEY_free(pubKey);
 
         return encryptedKeyHex;
+    }
+
+    std::string rsaDecryptKey(std::string encryptedKeyHex, std::string privKeyPem) {
+        EVP_PKEY* privKey = loadPrivateKey(privKeyPem);
+        if (!privKey) return "Error: Load PrivKey";
+
+        EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(privKey, NULL);
+        if (!ctx) { EVP_PKEY_free(privKey); return "Error: Context"; }
+
+        if (EVP_PKEY_decrypt_init(ctx) <= 0) return "Error: Init";
+        
+        if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) return "Error: Padding";
+
+        std::string encryptedData = hexToBytes(encryptedKeyHex);
+
+        size_t outlen;
+        if (EVP_PKEY_decrypt(ctx, NULL, &outlen, (const unsigned char*)encryptedData.c_str(), encryptedData.length()) <= 0) {
+             EVP_PKEY_CTX_free(ctx); EVP_PKEY_free(privKey); return "Error: Decrypt Size";
+        }
+
+        unsigned char* out = new unsigned char[outlen];
+
+        if (EVP_PKEY_decrypt(ctx, out, &outlen, (const unsigned char*)encryptedData.c_str(), encryptedData.length()) <= 0) {
+             delete[] out; EVP_PKEY_CTX_free(ctx); EVP_PKEY_free(privKey); return "Error: Decrypt Failed";
+        }
+
+        std::string sessionKeyHex = toHex(out, outlen);
+
+        delete[] out;
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(privKey);
+
+        return sessionKeyHex;
     }
 
     // --- SIGNATURES ---
@@ -279,5 +317,6 @@ EMSCRIPTEN_BINDINGS(my_module) {
         .function("decrypt", &PgpContext::decrypt)
         .function("rsaEncryptKey", &PgpContext::rsaEncryptKey)
         .function("signMessage", &PgpContext::signMessage)
+        .function("rsaDecryptKey", &PgpContext::rsaDecryptKey)
         .function("generateKeys", &PgpContext::generateKeys);
 }
