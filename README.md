@@ -1,110 +1,187 @@
 
-# SecureChat PGP (WebAssembly Core)
+---
 
-**SecureChat** is a proof-of-concept cryptographic engine that brings professional-grade **OpenSSL 3.1** to the browser using **WebAssembly**. 
+# SecureChat: Wasm-Powered End-to-End Encryption
 
-It implements a **Hybrid PGP Encryption Scheme** (RSA + AES) to enable secure, end-to-end encrypted messaging directly in the client, with no sensitive keys ever touching a server.
+**SecureChat** is a production-grade, browser-based messaging application that guarantees privacy through **End-to-End Encryption (E2EE)**.
 
-## Features
+It leverages **WebAssembly (C++ / OpenSSL)** to perform all cryptographic operations—Key Generation, Encryption, Decryption, and Signing—directly in the user's browser. The server acts strictly as a "blind courier," storing only encrypted blobs and routing packets without ever having access to user messages or private keys.
 
-* **C++ Core:** Powered by a custom C++ bridge linked against a static OpenSSL build.
-* **WebAssembly:** Compiled via Emscripten for near-native performance in the browser.
-* **Hybrid Encryption:**
-    * **RSA-2048:** For Identity, Key Exchange, and Digital Signatures (OAEP/SHA-256).
-    * **AES-128-CBC:** For high-speed symmetric message encryption.
-* **Memory Safe:** RAII-compliant C++ memory management to prevent leaks in long-running sessions.
-* **React Frontend:** A modern dashboard to generate identities, perform handshakes, and exchange messages.
+## Key Features
 
-## Architecture
+* **Hybrid Encryption Architecture:**
+* **RSA-2048 (OAEP):** Used for Identity, Key Exchange, and Digital Signatures.
+* **AES-128-CBC:** Used for high-speed symmetric message encryption.
 
-The application follows the standard PGP (Pretty Good Privacy) workflow:
 
-1.  **Identity:** Users generate an RSA-2048 Keypair locally.
-2.  **Handshake:** Users exchange **Public Keys**.
-3.  **Session:** * Sender generates a random **128-bit AES Session Key**.
-    * Message is encrypted with the **Session Key** (AES).
-    * Session Key is encrypted with Receiver's **Public Key** (RSA).
-    * Ciphertext is **Signed** with Sender's **Private Key** (RSA).
-4.  **Transport:** The packet `{ "aesCipher", "encryptedKey", "signature" }` is sent over the wire.
+* **Zero-Knowledge Authentication:**
+* Private Keys are encrypted client-side using a key derived from the user's password (PBKDF2).
+* The server stores the encrypted blob but cannot decrypt it.
+* Users can log in from any device, unlocking their identity in memory.
+
+
+* **High Performance:** powered by a custom C++ engine compiled to WebAssembly (Emscripten).
+* **Real-Time Messaging:** Socket.io handles instant message delivery.
+* **Memory Safety:** Strict RAII C++ patterns prevent memory leaks in the browser.
+
+---
 
 ## Project Structure
 
 ```text
 .
-├── client/          # React Frontend (Vite)
-│   ├── public/      # Hosts the .wasm and .js glue code
-│   └── src/         # UI Logic (App.jsx)
-├── crypto/          # C++ Core
-│   ├── openssl/     # OpenSSL source and static libs (.a)
-│   ├── src/         # Bridge code (bridge.cpp)
-│   ├── CMakeLists.txt
-│   └── build.sh     # Compilation script
-└── README.md
+├── client/                  # Frontend (React + Vite)
+│   ├── public/              # Hosts .wasm and .js bridge files
+│   ├── src/
+│   │   ├── api.js           # REST API & Password Derivation logic
+│   │   └── App.jsx          # UI & Socket Logic
+│   └── package.json
+│
+├── server/                  # Backend (Node.js + Express)
+│   ├── index.js             # Auth endpoints & Socket.io routing
+│   └── package.json
+│
+├── crypto/                  # Cryptographic Core (C++)
+│   ├── openssl/             # Static OpenSSL libraries
+│   ├── src/                 # Bridge code (bridge.cpp)
+│   └── build.sh             # Compilation script
 
 ```
 
-## Prerequisites
+---
 
-* **Linux / WSL2** (Required for OpenSSL compilation)
-* **Emscripten SDK** (emsdk) active in your environment
-* **CMake** (3.10+)
+## Components Overview
+
+### 1. The Crypto Engine (C++ / Wasm)
+
+A standalone library providing the cryptographic primitives. It exposes a JavaScript class `PgpContext` that handles:
+
+* `generateKeys()`: Creates RSA-2048 pairs.
+* `encrypt(msg, key)` / `decrypt(hex, key)`: AES-128 operations.
+* `rsaEncryptKey` / `rsaDecryptKey`: Secure session key exchange.
+* `signMessage`: Authenticity verification using SHA-256.
+
+### 2. The Client (React)
+
+A modern SPA that manages the encryption lifecycle. It derives AES keys from user passwords to "unwrap" the private key from the server, ensuring the private key never exists in plaintext outside the Wasm memory.
+
+### 3. The Backend (Node.js + PostgreSQL)
+
+A lightweight signaling server.
+
+* **Auth:** Stores `username`, `password_hash`, `public_key`, and `encrypted_priv_key`.
+* **Routing:** Passes encrypted JSON packets between connected sockets.
+
+---
+
+## The Full Data Flow
+
+### A. Registration (Zero-Knowledge)
+
+1. **User** enters `username` and `password`.
+2. **Wasm** generates a fresh RSA-2048 Keypair.
+3. **Client** derives a 128-bit Key from `password` (PBKDF2).
+4. **Client** encrypts the Private Key with this derived key.
+5. **Client** sends `Public Key` + `Encrypted Private Key` to Server.
+
+### B. Login & Identity Recovery
+
+1. **User** enters `password`.
+2. **Server** validates hash and returns the `Encrypted Private Key`.
+3. **Client** re-derives the key from `password` and decrypts the Private Key into Wasm memory.
+
+### C. The Chat Handshake (Alice -> Bob)
+
+1. **Lookup:** Alice fetches Bob's Public Key from the server.
+2. **Session:** Alice generates a random 128-bit **Session Key**.
+3. **Encryption:** * Message is encrypted with Session Key (AES).
+* Session Key is encrypted with Bob's Public Key (RSA).
+* Ciphertext is signed with Alice's Private Key.
+
+
+4. **Transport:** The JSON packet is sent via Socket.io.
+5. **Decryption:** Bob uses his Private Key to decrypt the Session Key, then decrypts the message.
+
+---
+
+## Build & Installation Guide
+
+### Prerequisites
+
+* **Docker** (for PostgreSQL)
 * **Node.js** (v18+)
+* **Emscripten SDK** (for compiling C++)
 
-## Build Instructions
+### Step 1: Database Setup
 
-### 1. Compile the C++ Core
+Start a PostgreSQL container.
 
-The build script compiles the C++ bridge, links OpenSSL, and copies the artifacts to the React public folder.
+```bash
+docker run --name pgp-db -e POSTGRES_PASSWORD=secret -d -p 5432:5432 postgres
+
+```
+
+Connect to the container and create the schema:
+
+```bash
+docker exec -it pgp-db psql -U postgres
+# Paste the SQL below:
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    public_key TEXT NOT NULL,
+    encrypted_priv_key TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+```
+
+### Step 2: Compile Wasm Engine
+
+Build the C++ bridge and copy artifacts to the client.
 
 ```bash
 cd crypto
 ./build.sh
+# Output should confirm copy to ../client/public/
 
 ```
 
-*Expected Output:* `Build Successful! Files secure_chat.js and .wasm are in crypto/build/`
+### Step 3: Start the Backend
 
-### 2. Run the Frontend
+```bash
+cd ../server
+npm install
+node index.js
+# Server listening on port 3000
 
-Navigate to the client folder, install dependencies, and start the Vite server.
+```
+
+### Step 4: Start the Frontend
 
 ```bash
 cd ../client
 npm install
 npm run dev
+# App running at http://localhost:5173
 
 ```
 
-Open your browser to `http://localhost:5173`.
+---
 
-## Usage Guide
+## Usage
 
-### Generating an Identity
-
-1. Go to the **"My Identity"** section in the UI.
-2. Click **"Generate New Keypair"**.
-3. Wait for the C++ engine to find large primes (approx 0.5s).
-4. Your Public and Private keys will appear.
-
-### Simulating a Chat
-
-1. **Partner Setup:** Copy your **Public Key** and paste it into the **"Partner Setup"** box (simulating a self-chat for testing).
-2. **Send Message:** Type a message in the "Secure Message" box and click **"Encrypt & Sign Packet"**.
-3. **Verify:** Click **"Verify / Decrypt"** to let the engine reverse the process:
-* Decrypt the Session Key using your Private Key.
-* Decrypt the Message using the Session Key.
+1. Open two different browsers (or Incognito mode).
+2. **User A:** Register as `alice`.
+3. **User B:** Register as `bob`.
+4. **User A:** Type `bob` in "Find User" and click Connect.
+5. **Chat:** Type a message and send.
+* *Observe:* The message appears in both windows.
+* *Verify:* Check the console/logs to see that only **Encrypted Hex Strings** were transmitted over the network.
 
 
 
-## Security Note
+## 📄 License
 
-This project uses **OpenSSL 3.0+** primitives, which are industry standard. However, this is a portfolio/educational project.
-
-* **Randomness:** Uses `window.crypto.getRandomValues` for AES keys.
-* **Storage:** Private keys are stored in React state (RAM) only.
-
-*Do not use for critical security applications without a full security audit.*
-
-## License
-
-MIT
+MIT License. Educational Purpose Only.
