@@ -3,7 +3,6 @@ import { io } from "socket.io-client";
 import { deriveKeyFromPassword, registerUser, loginUser, lookupUser } from './api';
 import './App.css';
 
-// Helper: Generate a random 16-byte session key as a Hex string
 const generateSessionKey = () => {
   const array = new Uint8Array(16);
   window.crypto.getRandomValues(array);
@@ -48,7 +47,6 @@ function App() {
     document.body.appendChild(script);
   }, []);
 
-  // Connect Socket when User Logs In
   useEffect(() => {
     if (user) {
       socketRef.current = io("http://localhost:3000");
@@ -56,11 +54,10 @@ function App() {
       socketRef.current.emit("join", user.username);
 
       socketRef.current.on("receive_message", (data) => {
-        // Add incoming encrypted packet to log
         setChatLog(prev => [...prev, { 
           from: data.from, 
           packet: data.packet, 
-          decrypted: null // Will be decrypted on render
+          decrypted: null
         }]);
       });
 
@@ -76,15 +73,12 @@ function App() {
     if (!pgpEngine) return;
     setStatus("Generating Keys...");
     try {
-      // 1. Generate RSA Keys
-      await new Promise(r => setTimeout(r, 100)); // UI flush
+      await new Promise(r => setTimeout(r, 100));
       const keys = pgpEngine.generateKeys();
 
-      // 2. Encrypt Private Key with Password
       const aesKey = await deriveKeyFromPassword(passwordInput);
       const encryptedPrivKey = pgpEngine.encrypt(keys.privateKey, aesKey);
 
-      // 3. Register
       await registerUser(usernameInput, passwordInput, keys.publicKey, encryptedPrivKey);
       
       alert("Registration Successful! Please Log In.");
@@ -100,10 +94,8 @@ function App() {
     if (!pgpEngine) return;
     setStatus("Logging in...");
     try {
-      // 1. Get Encrypted Blob
       const data = await loginUser(usernameInput, passwordInput);
       
-      // 2. Derive Key & Decrypt Identity
       const aesKey = await deriveKeyFromPassword(passwordInput);
       const privateKey = pgpEngine.decrypt(data.encryptedPrivKey, aesKey);
 
@@ -138,27 +130,21 @@ function App() {
   const handleSendMessage = () => {
     if (!partnerPubKey || !user) return;
 
-    // 1. Generate Session Key
     const sessionKey = generateSessionKey();
 
-    // 2. Encrypt Message (AES)
     const aesCipher = pgpEngine.encrypt(message, sessionKey);
 
-    // 3. Encrypt Session Key (RSA) - so Partner can read it
     const encryptedKey = pgpEngine.rsaEncryptKey(sessionKey, partnerPubKey);
 
-    // 4. Sign Message (RSA) - so Partner knows it's me
     const signature = pgpEngine.signMessage(aesCipher, user.keypair.privateKey);
 
     const packet = { aesCipher, encryptedKey, signature };
 
-    // 5. Send via Socket
     socketRef.current.emit("send_message", { 
       to: targetUsername, 
       packet 
     });
 
-    // 6. Log locally (We already know the plaintext)
     setChatLog(prev => [...prev, { 
       from: "Me", 
       packet, 
@@ -169,21 +155,16 @@ function App() {
 
   // --- RENDER LOGIC ---
 
-  // Tries to decrypt a log item on the fly
   const tryDecrypt = (logItem) => {
-    // If we already have the text (sent by us), return it
     if (logItem.decrypted) return logItem.decrypted;
     
-    // Safety checks
     if (!pgpEngine || !user) return "...";
 
     try {
-      // 1. Unwrap Session Key using MY Private Key
       const sessionKey = pgpEngine.rsaDecryptKey(logItem.packet.encryptedKey, user.keypair.privateKey);
       
       if (sessionKey.startsWith("Error")) return "RSA Decrypt Failed";
 
-      // 2. Decrypt Message using Session Key
       const text = pgpEngine.decrypt(logItem.packet.aesCipher, sessionKey);
       return text;
     } catch (e) {
@@ -214,14 +195,20 @@ function App() {
           />
           
           {authMode === 'login' ? (
-            <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
-              <button style={styles.btn} onClick={handleLogin}>Log In</button>
-              <span style={styles.link} onClick={() => setAuthMode('register')}>Or Create Account</span>
+            <div style={{display: 'flex', flexDirection: 'column', gap: '15px', marginTop: '10px'}}>
+              <button style={{...styles.btn, width: '100%'}} onClick={handleLogin}>Log In</button>
+              <span style={{...styles.link, textAlign: 'center'}} onClick={() => setAuthMode('register')}>
+                Or Create Account
+              </span>
             </div>
           ) : (
-            <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
-              <button style={{...styles.btn, background: '#28a745'}} onClick={handleRegister}>Register</button>
-              <span style={styles.link} onClick={() => setAuthMode('login')}>Or Log In</span>
+            <div style={{display: 'flex', flexDirection: 'column', gap: '15px', marginTop: '10px'}}>
+              <button style={{...styles.btn, background: '#28a745', width: '100%'}} onClick={handleRegister}>
+                Register
+              </button>
+              <span style={{...styles.link, textAlign: 'center'}} onClick={() => setAuthMode('login')}>
+                Or Log In
+              </span>
             </div>
           )}
         </div>
@@ -303,12 +290,57 @@ function App() {
 }
 
 const styles = {
-  container: { maxWidth: '800px', margin: '0 auto', padding: '20px', fontFamily: 'sans-serif' },
-  card: { padding: '20px', borderRadius: '8px', border: '1px solid #ddd', background: 'white' },
-  input: { display: 'block', width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' },
-  btn: { padding: '10px 20px', color: 'white', background: '#333', border: 'none', borderRadius: '4px', cursor: 'pointer' },
-  link: { fontSize: '0.9em', color: 'blue', cursor: 'pointer', textDecoration: 'underline' },
-  chatWindow: { height: '400px', overflowY: 'auto', border: '1px solid #ccc', borderRadius: '8px', padding: '20px', background: '#f9f9f9' }
+  container: { 
+    maxWidth: '900px', 
+    margin: '0 auto', 
+    padding: '40px 20px', 
+    fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif',
+    color: '#333'
+  },
+  card: { 
+    padding: '25px', 
+    borderRadius: '12px', 
+    border: '1px solid #e1e4e8', 
+    background: '#ffffff',
+    boxShadow: '0 4px 6px rgba(0,0,0,0.05)',
+    marginBottom: '20px'
+  },
+  input: { 
+    display: 'block', 
+    width: '100%', 
+    padding: '12px', 
+    marginBottom: '15px', 
+    borderRadius: '6px', 
+    border: '1px solid #ced4da', 
+    boxSizing: 'border-box',
+    fontSize: '16px',
+    color: '#333',
+    backgroundColor: '#fff'
+  },
+  btn: { 
+    padding: '12px 20px', 
+    color: 'white', 
+    background: '#333', 
+    border: 'none', 
+    borderRadius: '6px', 
+    cursor: 'pointer',
+    fontSize: '16px',
+    fontWeight: '600'
+  },
+  link: { 
+    fontSize: '0.9em', 
+    color: '#007bff', 
+    cursor: 'pointer', 
+    textDecoration: 'underline' 
+  },
+  chatWindow: { 
+    height: '500px', 
+    overflowY: 'auto', 
+    border: '1px solid #e1e4e8', 
+    borderRadius: '12px', 
+    padding: '20px', 
+    background: '#f8f9fa' 
+  }
 };
 
 export default App;
